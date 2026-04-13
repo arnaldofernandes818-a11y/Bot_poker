@@ -19,20 +19,19 @@ PAYOUT_MINIMO = 90
 
 class LacerBotQuotex:
     def __init__(self):
-        # 🟢 AGREGAMOS LAS RUTAS DE CHROME PARA RENDER
+        # 🟢 RUTAS DE ENTORNO PARA RENDER
         chrome_path = os.environ.get("GOOGLE_CHROME_BIN")
         driver_path = os.environ.get("CHROMEDRIVER_PATH")
         
-        # 🟢 CONFIGURAMOS LOS ARGUMENTOS DE CHROME (FLASH / HEADLESS)
-        # Esto permite que Chrome funcione en el servidor sin pantalla
+        # 🟢 ARGUMENTOS PARA NAVEGADOR EN LA NUBE
         chrome_args = [
             "--no-sandbox",
             "--disable-dev-shm-usage",
             "--headless",
-            "--disable-gpu"
+            "--disable-gpu",
+            "--window-size=1920,1080"
         ]
         
-        # Inicializamos la API con la configuración de Render
         self.api = Quotex(
             email=EMAIL, 
             password=PASS,
@@ -52,7 +51,16 @@ class LacerBotQuotex:
                 self.api.change_balance("PRACTICE") 
                 print(f"--- CONECTADO CON ÉXITO: {EMAIL} ---")
                 return True
+            
+            # 📸 INVESTIGACIÓN SI FALLA
             print(f"Error de conexión: {message}")
+            try:
+                if hasattr(self.api, 'driver') and self.api.driver:
+                    self.api.driver.save_screenshot("captura_error.png")
+                    print("📸 Se ha intentado guardar 'captura_error.png' para depuración.")
+            except Exception as e_snap:
+                print(f"No se pudo tomar la captura: {e_snap}")
+                
             return False
         except Exception as e:
             print(f"Error crítico al conectar: {e}")
@@ -87,20 +95,18 @@ class LacerBotQuotex:
             v = ha.iloc[-1]
             e = ema.iloc[-1]
             e_ant = ema.iloc[-5] 
-            cuerpo = abs(v['close'] - v['open'])
-            mecha_sup = v['high'] - max(v['open'], v['close'])
-            mecha_inf = min(v['open'], v['close']) - v['low']
             inclinacion = e - e_ant
 
-            if v['close'] > v['open'] and mecha_inf == 0 and v['close'] > e:
+            if v['close'] > v['open'] and (v['open'] - v['low']) == 0 and v['close'] > e:
                 if inclinacion > 0.00005: return "CALL"
-            if v['close'] < v['open'] and mecha_sup == 0 and v['close'] < e:
+            if v['close'] < v['open'] and (v['high'] - v['close']) == 0 and v['close'] < e:
                 if inclinacion < -0.00005: return "PUT"
         except:
             pass
         return None
 
     async def ejecutar(self):
+        # Servidor para que Render no cierre el bot
         async def handle(request): return web.Response(text="LacerBot Is Alive")
         app = web.Application()
         app.router.add_get('/', handle)
@@ -114,6 +120,7 @@ class LacerBotQuotex:
             print("No se pudo iniciar el bot por error de conexión.")
             return
         
+        print("Bot en marcha. Buscando señales...")
         while True:
             if not self.en_operacion:
                 try:
