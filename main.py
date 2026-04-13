@@ -1,4 +1,4 @@
-import time
+import asyncio
 import pandas as pd
 import numpy as np
 from quotexpy import Quotex
@@ -22,16 +22,19 @@ class LacerBotQuotex:
         self.monto_actual = MONTO_BASE
         self.en_operacion = False
         
-    def conectar(self):
-        check, message = self.api.connect()
+    async def conectar(self):
+        # Corregido: Se añade await para esperar la respuesta del servidor
+        check, message = await self.api.connect()
         if check:
             self.api.change_balance("PRACTICE") 
             print(f"--- CONECTADO (REAL/OTC Habilitado): {EMAIL} ---")
             return True
+        print(f"Error de conexión: {message}")
         return False
 
-    def obtener_datos(self, activo):
-        velas = self.api.get_candles(activo, 300) 
+    async def obtener_datos(self, activo):
+        # Corregido: Las peticiones de velas deben ser await
+        velas = await self.api.get_candles(activo, 300) 
         df = pd.DataFrame(velas)
         ha_df = pd.DataFrame(index=df.index, columns=['open', 'high', 'low', 'close'])
         ha_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
@@ -45,26 +48,22 @@ class LacerBotQuotex:
         ema = df['close'].ewm(span=PERIODO_EMA, adjust=False).mean()
         return ha_df, ema
 
-    def analizar(self, activo):
+    async def analizar(self, activo):
         try:
-            ha, ema = self.obtener_datos(activo)
+            ha, ema = await self.obtener_datos(activo)
             v = ha.iloc[-1]
             e = ema.iloc[-1]
-            e_ant = ema.iloc[-5] # Revisa 5 velas atrás para ver la fuerza del inicio
+            e_ant = ema.iloc[-5] 
             
             cuerpo = abs(v['close'] - v['open'])
             mecha_sup = v['high'] - max(v['open'], v['close'])
             mecha_inf = min(v['open'], v['close']) - v['low']
-            
-            # FILTRO DE INCLINACIÓN (Movimiento empezando con fuerza)
             inclinacion = e - e_ant
 
-            # COMPRA: Inclinación positiva clara + Heikin Ashi perfecta
             if v['close'] > v['open'] and mecha_inf == 0 and v['close'] > e:
-                if inclinacion > 0.00005: # Filtro más exigente para asegurar tendencia
+                if inclinacion > 0.00005:
                     return "CALL"
 
-            # VENTA: Inclinación negativa clara + Heikin Ashi perfecta
             if v['close'] < v['open'] and mecha_sup == 0 and v['close'] < e:
                 if inclinacion < -0.00005:
                     return "PUT"
@@ -72,37 +71,44 @@ class LacerBotQuotex:
             return None
         return None
 
-    def ejecutar(self):
-        if not self.conectar(): return
+    async def ejecutar(self):
+        if not await self.conectar(): return
         while True:
             if not self.en_operacion:
-                activos = self.api.get_all_asset_payout()
+                # Corregido: Llamada asíncrona para obtener pagos
+                activos = await self.api.get_all_asset_payout()
                 for activo, payout in activos.items():
-                    # Ahora escanea TODOS los pares con pago >= 90%
                     if (payout * 100) >= PAYOUT_MINIMO:
-                        senal = self.analizar(activo)
+                        senal = await self.analizar(activo)
                         if senal:
                             print(f"\n--- ENTRADA CONFIRMADA EN {activo} ({int(payout*100)}%) ---")
-                            id_op = self.api.buy(self.monto_actual, activo, senal, EXPIRACION_MINUTOS)
+                            # Corregido: Operación de compra con await
+                            id_op = await self.api.buy(self.monto_actual, activo, senal, EXPIRACION_MINUTOS)
                             if id_op:
                                 self.en_operacion = True
-                                time.sleep(EXPIRACION_MINUTOS * 60)
-                                self.gestionar_resultado(self.api.check_win(id_op))
+                                await asyncio.sleep(EXPIRACION_MINUTOS * 60)
+                                # Corregido: Chequeo de resultado con await
+                                gano = await self.api.check_win(id_op)
+                                self.gestionar_resultado(gano)
                                 break
-            time.sleep(15)
+            await asyncio.sleep(15)
 
     def gestionar_resultado(self, gano):
         self.en_operacion = False
         if gano:
+            print(">>> OPERACIÓN GANADA")
             self.monto_actual = MONTO_BASE
             self.estado_martingala = 0
         else:
             if self.estado_martingala < MAX_CICLOS_MG:
                 self.estado_martingala += 1
                 self.monto_actual *= MULTIPLICADOR_MG
+                print(f">>> OPERACIÓN PERDIDA. Aplicando Martingala {self.estado_martingala}")
             else:
+                print(">>> CICLO MARTINGALA AGOTADO")
                 self.monto_actual = MONTO_BASE
                 self.estado_martingala = 0
 
 if __name__ == "__main__":
-    LacerBotQuotex().ejecutar()
+    # Corregido: Lanzador asíncrono obligatorio para Python moderno
+    asyncio.run(LacerBotQuotex().ejecutar())
