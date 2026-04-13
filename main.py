@@ -2,6 +2,7 @@ import asyncio
 import pandas as pd
 import numpy as np
 from quotexpy import Quotex
+import os # Para leer el puerto de Render
 
 # --- CONFIGURACIÓN DE ACCESO ---
 EMAIL = "Andresfernandes818@gmail.com"
@@ -23,17 +24,16 @@ class LacerBotQuotex:
         self.en_operacion = False
         
     async def conectar(self):
-        # Corregido: Se añade await para esperar la respuesta del servidor
+        print("Intentando conectar a Quotex...")
         check, message = await self.api.connect()
         if check:
             self.api.change_balance("PRACTICE") 
-            print(f"--- CONECTADO (REAL/OTC Habilitado): {EMAIL} ---")
+            print(f"--- CONECTADO CON ÉXITO: {EMAIL} ---")
             return True
         print(f"Error de conexión: {message}")
         return False
 
     async def obtener_datos(self, activo):
-        # Corregido: Las peticiones de velas deben ser await
         velas = await self.api.get_candles(activo, 300) 
         df = pd.DataFrame(velas)
         ha_df = pd.DataFrame(index=df.index, columns=['open', 'high', 'low', 'close'])
@@ -54,61 +54,68 @@ class LacerBotQuotex:
             v = ha.iloc[-1]
             e = ema.iloc[-1]
             e_ant = ema.iloc[-5] 
-            
             cuerpo = abs(v['close'] - v['open'])
             mecha_sup = v['high'] - max(v['open'], v['close'])
             mecha_inf = min(v['open'], v['close']) - v['low']
             inclinacion = e - e_ant
 
             if v['close'] > v['open'] and mecha_inf == 0 and v['close'] > e:
-                if inclinacion > 0.00005:
-                    return "CALL"
+                if inclinacion > 0.00005: return "CALL"
 
             if v['close'] < v['open'] and mecha_sup == 0 and v['close'] < e:
-                if inclinacion < -0.00005:
-                    return "PUT"
-        except:
+                if inclinacion < -0.00005: return "PUT"
+        except Exception as e:
             return None
         return None
 
     async def ejecutar(self):
+        # Servidor Falso para que Render no apague el bot
+        from aiohttp import web
+        async def handle(request): return web.Response(text="Bot Running")
+        app = web.Application()
+        app.router.add_get('/', handle)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 10000)))
+        await site.start()
+        print("Servidor de mantenimiento activo en puerto", os.environ.get("PORT", 10000))
+
         if not await self.conectar(): return
+        
         while True:
             if not self.en_operacion:
-                # Corregido: Llamada asíncrona para obtener pagos
-                activos = await self.api.get_all_asset_payout()
-                for activo, payout in activos.items():
-                    if (payout * 100) >= PAYOUT_MINIMO:
-                        senal = await self.analizar(activo)
-                        if senal:
-                            print(f"\n--- ENTRADA CONFIRMADA EN {activo} ({int(payout*100)}%) ---")
-                            # Corregido: Operación de compra con await
-                            id_op = await self.api.buy(self.monto_actual, activo, senal, EXPIRACION_MINUTOS)
-                            if id_op:
-                                self.en_operacion = True
-                                await asyncio.sleep(EXPIRACION_MINUTOS * 60)
-                                # Corregido: Chequeo de resultado con await
-                                gano = await self.api.check_win(id_op)
-                                self.gestionar_resultado(gano)
-                                break
-            await asyncio.sleep(15)
+                try:
+                    activos = await self.api.get_all_asset_payout()
+                    for activo, payout in activos.items():
+                        if (payout * 100) >= PAYOUT_MINIMO:
+                            senal = await self.analizar(activo)
+                            if senal:
+                                print(f"\n--- SEÑAL EN {activo} ({int(payout*100)}%) ---")
+                                id_op = await self.api.buy(self.monto_actual, activo, senal, EXPIRACION_MINUTOS)
+                                if id_op:
+                                    self.en_operacion = True
+                                    await asyncio.sleep(EXPIRACION_MINUTOS * 60)
+                                    gano = await self.api.check_win(id_op)
+                                    self.gestionar_resultado(gano)
+                                    break
+                except:
+                    pass
+            await asyncio.sleep(20)
 
     def gestionar_resultado(self, gano):
         self.en_operacion = False
         if gano:
-            print(">>> OPERACIÓN GANADA")
+            print(">>> GANADA")
             self.monto_actual = MONTO_BASE
             self.estado_martingala = 0
         else:
             if self.estado_martingala < MAX_CICLOS_MG:
                 self.estado_martingala += 1
                 self.monto_actual *= MULTIPLICADOR_MG
-                print(f">>> OPERACIÓN PERDIDA. Aplicando Martingala {self.estado_martingala}")
+                print(f">>> PERDIDA. MG {self.estado_martingala}")
             else:
-                print(">>> CICLO MARTINGALA AGOTADO")
                 self.monto_actual = MONTO_BASE
                 self.estado_martingala = 0
 
 if __name__ == "__main__":
-    # Corregido: Lanzador asíncrono obligatorio para Python moderno
     asyncio.run(LacerBotQuotex().ejecutar())
