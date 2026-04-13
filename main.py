@@ -2,7 +2,8 @@ import asyncio
 import pandas as pd
 import numpy as np
 from quotexpy import Quotex
-import os # Para leer el puerto de Render
+import os
+from aiohttp import web
 
 # --- CONFIGURACIÓN DE ACCESO ---
 EMAIL = "Andresfernandes818@gmail.com"
@@ -18,6 +19,7 @@ PAYOUT_MINIMO = 90
 
 class LacerBotQuotex:
     def __init__(self):
+        # Intentamos inicializar con parámetros para evitar que busque Chrome local si no existe
         self.api = Quotex(email=EMAIL, password=PASS)
         self.estado_martingala = 0
         self.monto_actual = MONTO_BASE
@@ -25,32 +27,44 @@ class LacerBotQuotex:
         
     async def conectar(self):
         print("Intentando conectar a Quotex...")
-        check, message = await self.api.connect()
-        if check:
-            self.api.change_balance("PRACTICE") 
-            print(f"--- CONECTADO CON ÉXITO: {EMAIL} ---")
-            return True
-        print(f"Error de conexión: {message}")
-        return False
+        try:
+            check, message = await self.api.connect()
+            if check:
+                self.api.change_balance("PRACTICE") 
+                print(f"--- CONECTADO CON ÉXITO: {EMAIL} ---")
+                return True
+            print(f"Error de conexión: {message}")
+            return False
+        except Exception as e:
+            print(f"Error crítico al conectar: {e}")
+            return False
 
     async def obtener_datos(self, activo):
-        velas = await self.api.get_candles(activo, 300) 
-        df = pd.DataFrame(velas)
-        ha_df = pd.DataFrame(index=df.index, columns=['open', 'high', 'low', 'close'])
-        ha_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-        for i in range(len(df)):
-            if i == 0:
-                ha_df.iloc[i, 0] = (df.iloc[0]['open'] + df.iloc[0]['close']) / 2
-            else:
-                ha_df.iloc[i, 0] = (ha_df.iloc[i-1][0] + ha_df.iloc[i-1][3]) / 2
-        ha_df['high'] = df[['high', 'open', 'close']].max(axis=1)
-        ha_df['low'] = df[['low', 'open', 'close']].min(axis=1)
-        ema = df['close'].ewm(span=PERIODO_EMA, adjust=False).mean()
-        return ha_df, ema
+        try:
+            velas = await self.api.get_candles(activo, 300) 
+            df = pd.DataFrame(velas)
+            if df.empty: return None, None
+            
+            ha_df = pd.DataFrame(index=df.index, columns=['open', 'high', 'low', 'close'])
+            ha_df['close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+            for i in range(len(df)):
+                if i == 0:
+                    ha_df.iloc[i, 0] = (df.iloc[0]['open'] + df.iloc[0]['close']) / 2
+                else:
+                    ha_df.iloc[i, 0] = (ha_df.iloc[i-1][0] + ha_df.iloc[i-1][3]) / 2
+            
+            ha_df['high'] = df[['high', 'open', 'close']].max(axis=1)
+            ha_df['low'] = df[['low', 'open', 'close']].min(axis=1)
+            ema = df['close'].ewm(span=PERIODO_EMA, adjust=False).mean()
+            return ha_df, ema
+        except:
+            return None, None
 
     async def analizar(self, activo):
+        ha, ema = await self.obtener_datos(activo)
+        if ha is None or ema is None: return None
+        
         try:
-            ha, ema = await self.obtener_datos(activo)
             v = ha.iloc[-1]
             e = ema.iloc[-1]
             e_ant = ema.iloc[-5] 
@@ -59,28 +73,30 @@ class LacerBotQuotex:
             mecha_inf = min(v['open'], v['close']) - v['low']
             inclinacion = e - e_ant
 
+            # COMPRA
             if v['close'] > v['open'] and mecha_inf == 0 and v['close'] > e:
                 if inclinacion > 0.00005: return "CALL"
-
+            # VENTA
             if v['close'] < v['open'] and mecha_sup == 0 and v['close'] < e:
                 if inclinacion < -0.00005: return "PUT"
-        except Exception as e:
-            return None
+        except:
+            pass
         return None
 
     async def ejecutar(self):
-        # Servidor Falso para que Render no apague el bot
-        from aiohttp import web
-        async def handle(request): return web.Response(text="Bot Running")
+        # Servidor para mantener vivo el proceso en Render
+        async def handle(request): return web.Response(text="LacerBot Is Alive")
         app = web.Application()
         app.router.add_get('/', handle)
         runner = web.AppRunner(app)
         await runner.setup()
-        site = web.TCPSite(runner, '0.0.0.0', int(os.environ.get("PORT", 10000)))
+        port = int(os.environ.get("PORT", 10000))
+        site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
-        print("Servidor de mantenimiento activo en puerto", os.environ.get("PORT", 10000))
 
-        if not await self.conectar(): return
+        if not await self.conectar():
+            print("No se pudo iniciar el bot por error de conexión.")
+            return
         
         while True:
             if not self.en_operacion:
@@ -98,8 +114,8 @@ class LacerBotQuotex:
                                     gano = await self.api.check_win(id_op)
                                     self.gestionar_resultado(gano)
                                     break
-                except:
-                    pass
+                except Exception as e:
+                    print(f"Error en bucle: {e}")
             await asyncio.sleep(20)
 
     def gestionar_resultado(self, gano):
