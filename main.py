@@ -19,14 +19,33 @@ PAYOUT_MINIMO = 90
 
 class LacerBotQuotex:
     def __init__(self):
-        # Intentamos inicializar con parámetros para evitar que busque Chrome local si no existe
-        self.api = Quotex(email=EMAIL, password=PASS)
+        # 🟢 AGREGAMOS LAS RUTAS DE CHROME PARA RENDER
+        chrome_path = os.environ.get("GOOGLE_CHROME_BIN")
+        driver_path = os.environ.get("CHROMEDRIVER_PATH")
+        
+        # 🟢 CONFIGURAMOS LOS ARGUMENTOS DE CHROME (FLASH / HEADLESS)
+        # Esto permite que Chrome funcione en el servidor sin pantalla
+        chrome_args = [
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--headless",
+            "--disable-gpu"
+        ]
+        
+        # Inicializamos la API con la configuración de Render
+        self.api = Quotex(
+            email=EMAIL, 
+            password=PASS,
+            chrome_bin=chrome_path,
+            executable_path=driver_path,
+            args=chrome_args
+        )
         self.estado_martingala = 0
         self.monto_actual = MONTO_BASE
         self.en_operacion = False
         
     async def conectar(self):
-        print("Intentando conectar a Quotex...")
+        print("Intentando conectar a Quotex con configuración de nube...")
         try:
             check, message = await self.api.connect()
             if check:
@@ -73,10 +92,8 @@ class LacerBotQuotex:
             mecha_inf = min(v['open'], v['close']) - v['low']
             inclinacion = e - e_ant
 
-            # COMPRA
             if v['close'] > v['open'] and mecha_inf == 0 and v['close'] > e:
                 if inclinacion > 0.00005: return "CALL"
-            # VENTA
             if v['close'] < v['open'] and mecha_sup == 0 and v['close'] < e:
                 if inclinacion < -0.00005: return "PUT"
         except:
@@ -84,7 +101,6 @@ class LacerBotQuotex:
         return None
 
     async def ejecutar(self):
-        # Servidor para mantener vivo el proceso en Render
         async def handle(request): return web.Response(text="LacerBot Is Alive")
         app = web.Application()
         app.router.add_get('/', handle)
